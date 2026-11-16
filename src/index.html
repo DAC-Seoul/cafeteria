@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>식단 보기</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f6f7f9;--card:#fff;--tx:#1d2330;--mut:#6b7385;--bd:#dde1e8;--pri:#2f6feb;--ok:#1a8f4c;--bad:#d64545}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14171d;--card:#1e222b;--tx:#e8ebf1;--mut:#9aa2b3;--bd:#333948;--pri:#6b9bff;--ok:#4cc98a;--bad:#ff7a7a}}
+:root[data-theme="dark"]{--bg:#14171d;--card:#1e222b;--tx:#e8ebf1;--mut:#9aa2b3;--bd:#333948;--pri:#6b9bff;--ok:#4cc98a;--bad:#ff7a7a}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font-family:-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;line-height:1.5}
+main{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0 0 12px}h2{font-size:16px;margin:0 0 10px}
+nav{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+nav button{flex:1;min-width:70px;padding:10px 6px;border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:8px;font-size:14px;cursor:pointer}
+nav button.on{background:var(--pri);color:#fff;border-color:var(--pri)}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:12px}
+input,textarea,select{width:100%;padding:9px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--tx);font:inherit}
+textarea{min-height:90px;resize:vertical}
+button.pri{background:var(--pri);color:#fff;border:0;border-radius:8px;padding:10px 16px;font:inherit;cursor:pointer;margin-top:8px}
+button.pri:disabled{opacity:.4;cursor:not-allowed}
+.row{display:flex;gap:8px;align-items:center;margin-bottom:8px}.row label{width:90px;flex:none}.row input{flex:1}
+.mut{color:var(--mut);font-size:13px}.ok{color:var(--ok)}.bad{color:var(--bad)}
+.menu{white-space:pre-wrap;margin:4px 0 0}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap}
+th,td{padding:7px 8px;border-bottom:1px solid var(--bd);text-align:right}th:first-child,td:first-child{text-align:left}
+tfoot td{font-weight:700}
+hr{border:0;border-top:1px solid var(--bd);margin:12px 0}
+button.sm{padding:8px 12px;margin:0}
+html{-webkit-text-size-adjust:100%}
+button,input,select,textarea{font-size:16px;touch-action:manipulation}
+input,select,textarea{min-height:46px;padding:11px 12px}
+nav button{min-height:46px;font-size:15px;font-weight:600}
+button.pri{min-height:46px;font-weight:600}
+button.pri.sm{min-height:40px}
+.row{flex-wrap:wrap}
+.row input,.row select{flex:1 1 110px;min-width:0}
+input[type=number]{font-size:22px;font-weight:700;text-align:center}
+th:first-child,td:first-child{position:sticky;left:0;background:var(--card)}
+@media (max-width:520px){
+  main{padding:12px}
+  .card{padding:12px}
+  button.pri:not(.sm){width:100%;margin-top:10px}
+  .row label{width:84px}
+  h1{font-size:19px}
+}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+<main>
+<h1>🍚 식단 보기</h1>
+<div id="sync" class="bad" style="display:none;margin-bottom:10px"></div>
+<nav id="nav">
+<button data-t="view" class="on">식단 보기</button>
+<button data-t="order">식수 신청</button>
+<button data-t="kitchen">설정</button>
+<button data-t="stats">통계</button>
+</nav>
+<section id="view"></section>
+<section id="order" hidden></section>
+<section id="kitchen" hidden></section>
+<section id="stats" hidden></section>
+</main>
+<script>
+const DEF={companies:['A사','B사','C사','D사','E사','F사','G사'],menus:{},orders:{},actual:{}};
+const clone=o=>JSON.parse(JSON.stringify(o));
+let db=clone(DEF),snap=clone(db),q=Promise.resolve();
+const gs=(fn,...a)=>new Promise((ok,no)=>google.script.run.withSuccessHandler(ok).withFailureHandler(no)[fn](...a));
+const sync=t=>{const e=document.getElementById('sync');if(e){e.textContent=t||'';e.style.display=t?'block':'none'}};
+const fix=()=>{db.companies=db.companies||DEF.companies.slice();['menus','orders','actual','hol','cred'].forEach(s=>db[s]=db[s]||{});db.admins=db.admins||[];db.defaults=db.defaults||{}};
+async function load(){
+  try{const r=await gs('getDb');if(r)db=JSON.parse(r);else db=clone(DEF);sync('')}
+  catch(e){sync('⚠ 서버에서 데이터를 불러오지 못했습니다. 새로고침 해 주세요.')}
+  fix();snap=clone(db);
+  await finalizeDue();
+}
+/* 마감(오후 5시)이 지났는데 신청이 없는 입주사는 기본 인원으로 확정해 저장 */
+async function finalizeDue(){
+  const ds=[];
+  for(let i=-14;i<=1;i++){
+    const d=ymd(add(new Date(),i));
+    if(offDay(d)||!closed(d))continue;
+    if(db.companies.some(c=>typeof db.defaults[c]==='number'&&(db.orders[d]||{})[c]===undefined))ds.push(d);
+  }
+  if(!ds.length)return;
+  try{
+    if(await gs('finalizeDefaults',ds)){const r=await gs('getDb');if(r){db=JSON.parse(r);fix();snap=clone(db)}}
+  }catch(e){}
+}
+/* 변경된 부분만 서버로 보내 여러 명이 동시에 저장해도 서로 덮어쓰지 않게 함 */
+const DEPTH={orders:2,actual:2,menus:1,hol:1,cred:1,defaults:1,companies:0,admins:0};
+function diff(a,b,d,p,ops){
+  if(d===0){if(JSON.stringify(a)!==JSON.stringify(b))ops.push({p,v:b});return}
+  a=a||{};b=b||{};
+  new Set([...Object.keys(a),...Object.keys(b)]).forEach(k=>{
+    if(!(k in b))ops.push({p:[...p,k],d:1});else diff(a[k],b[k],d-1,[...p,k],ops);
+  });
+}
+const save=()=>{
+  const ops=[];Object.keys(DEPTH).forEach(s=>diff(snap[s],db[s],DEPTH[s],[s],ops));
+  if(!ops.length)return;
+  snap=clone(db);
+  q=q.then(()=>gs('applyOps',ops)).then(()=>sync('')).catch(()=>sync('⚠ 저장에 실패했습니다. 네트워크를 확인하고 다시 저장해 주세요.'));
+};
+/* 파일 저장(엑셀): 브라우저 다운로드 */
+const claude={use:async n=>n==='downloads'?{save:async({filename,data})=>{
+  const u=URL.createObjectURL(new Blob([data],{type:'application/octet-stream'}));
+  const a=document.createElement('a');a.href=u;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(u),3000);
+}}:null};
+const $=s=>document.querySelector(s);
+const pad=n=>String(n).padStart(2,'0');
+const ymd=d=>d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
+const add=(d,n)=>{const x=new Date(d);x.setDate(x.getDate()+n);return x};
+const DOW=['일','월','화','수','목','금','토'];
+const lab=s=>{const d=new Date(s+'T00:00:00');return (d.getMonth()+1)+'/'+d.getDate()+'('+DOW[d.getDay()]+')'};
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const today=()=>ymd(new Date());
+const tomorrow=()=>ymd(add(new Date(),1));
+// 마감: 오늘 17시에 내일 분 마감. 오늘/과거 날짜도 마감.
+const closed=d=>d<=today()||(d===tomorrow()&&new Date().getHours()>=17);
+
+function updNav(){const b=document.querySelector('#nav [data-t="stats"]');if(b)b.style.display=isAdmin()?'':'none'}
+async function show(t){
+  await q;await load();
+  if(t==='stats'&&!isAdmin())t='kitchen';
+  updNav();
+  document.querySelectorAll('main>section').forEach(s=>s.hidden=s.id!==t);
+  document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  ({view:rView,order:rOrder,kitchen:rKitchen,stats:rStats})[t]();
+}
+$('#nav').onclick=e=>{if(e.target.dataset.t)show(e.target.dataset.t)};
+
+/* 한국 공휴일 (2026~2027, 대체공휴일 포함) — 임시공휴일은 주방 탭에서 추가 */
+const HOL={
+'2026-12-25':'크리스마스',
+'2027-01-01':'신정','2027-02-06':'설날','2027-02-07':'설날','2027-02-08':'설날','2027-02-09':'대체공휴일(설날)',
+'2027-03-01':'삼일절','2027-05-01':'노동절','2027-05-05':'어린이날','2027-05-13':'부처님오신날','2027-06-06':'현충일',
+'2027-07-17':'제헌절','2027-08-15':'광복절','2027-08-16':'대체공휴일(광복절)',
+'2027-09-14':'추석','2027-09-15':'추석','2027-09-16':'추석',
+'2027-10-03':'개천절','2027-10-04':'대체공휴일(개천절)','2027-10-09':'한글날','2027-10-11':'대체공휴일(한글날)',
+'2027-12-25':'크리스마스','2027-12-27':'대체공휴일(크리스마스)'
+};
+const hol=d=>db.hol[d]||HOL[d]||'';
+const ordOf=(d,c)=>{const v=(db.orders[d]||{})[c];return v!==undefined?v:(closed(d)&&!offDay(d)?(db.defaults[c]||0):0)};
+const dtxt=d=>d+' ('+DOW[new Date(d+'T00:00:00').getDay()]+')';
+const offDay=d=>{const w=new Date(d+'T00:00:00').getDay();return w===0||w===6||!!hol(d)};
+const nextOk=d=>{let x=d;for(let i=0;i<400&&offDay(x);i++)x=ymd(add(new Date(x+'T00:00:00'),1));return x};
+/* 달력 선택기: 주말·공휴일·휴무일은 클릭 불가 */
+function calPicker(inp,value,min,onPick,noSel){
+  const box=document.createElement('div');
+  box.style.cssText='display:none;margin:0 0 12px;border:1px solid var(--bd);border-radius:10px;padding:8px;background:var(--card)';
+  inp.closest('.row').insertAdjacentElement('afterend',box);
+  let cur=new Date(value+'T00:00:00');cur=new Date(cur.getFullYear(),cur.getMonth(),1);
+  const draw=()=>{
+    const y=cur.getFullYear(),m=cur.getMonth(),first=cur.getDay(),n=new Date(y,m+1,0).getDate();
+    let h='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px"><button type="button" class="pri sm" data-n="-1">◀</button><b>'+y+'년 '+(m+1)+'월</b><button type="button" class="pri sm" data-n="1">▶</button></div><div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;text-align:center">';
+    DOW.forEach(w=>{h+='<div class="mut">'+w+'</div>'});
+    for(let i=0;i<first;i++)h+='<div></div>';
+    for(let i=1;i<=n;i++){
+      const d=y+'-'+pad(m+1)+'-'+pad(i),hn=hol(d),off=offDay(d)||(min&&d<min),sel=!noSel&&d===value;
+      h+='<button type="button" data-d="'+d+'" '+(off?'disabled':'')+(hn?' title="'+esc(hn)+'"':'')+' style="min-height:40px;padding:0;border:1px solid var(--bd);border-radius:8px;background:'+(sel?'var(--pri)':'var(--bg)')+';color:'+(sel?'#fff':hn?'var(--bad)':'var(--tx)')+';opacity:'+(off?'.35':'1')+';cursor:'+(off?'not-allowed':'pointer')+'">'+i+'</button>';
+    }
+    box.innerHTML=h+'</div>';
+  };
+  box.onclick=e=>{
+    const b=e.target.closest('button');if(!b)return;
+    if(b.dataset.n){cur=new Date(cur.getFullYear(),cur.getMonth()+parseInt(b.dataset.n),1);draw();return}
+    if(b.dataset.d&&!b.disabled){box.style.display='none';onPick(b.dataset.d)}
+  };
+  inp.onclick=()=>{box.style.display=box.style.display==='none'?'block':'none'};
+  draw();
+}
+
+/* 1. 식단 보기 (월간 달력, 월~금) */
+function rView(){
+  const el=$('#view'),ref=el.dataset.vm||today(),r=new Date(ref+'T00:00:00'),y=r.getFullYear(),m=r.getMonth(),n=new Date(y,m+1,0).getDate();
+  const cells=[];
+  for(let i=1;i<=n;i++){
+    const w=new Date(y,m,i).getDay();if(w===0||w===6)continue;
+    if(!cells.length)for(let k=0;k<w-1;k++)cells.push(null);
+    cells.push(y+'-'+pad(m+1)+'-'+pad(i));
+  }
+  let h='<div class="card"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px"><button type="button" class="pri sm" id="vprev">◀</button><b>'+y+'년 '+(m+1)+'월 식단</b><button type="button" class="pri sm" id="vnext">▶</button></div>'+
+    '<div class="scroll"><div style="min-width:520px"><div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px">';
+  ['월','화','수','목','금'].forEach(w=>{h+='<div class="mut" style="text-align:center">'+w+'</div>'});
+  cells.forEach(d=>{
+    if(!d){h+='<div></div>';return}
+    const hn=hol(d),mn=db.menus[d],k=+d.slice(8),t=d===today();
+    h+='<div style="border:'+(t?'2px solid #f97316':'1px solid var(--bd)')+';border-radius:8px;padding:4px 5px;min-height:110px;background:'+(t?'var(--bg);background:color-mix(in srgb,#f97316 14%,var(--bg));box-shadow:0 0 0 3px color-mix(in srgb,#f97316 25%,transparent)':'var(--bg)')+';font-size:12px;line-height:1.4;overflow-wrap:anywhere"><div style="font-weight:700;color:'+(hn?'var(--bad)':t?'#c2410c':'var(--tx)')+'">'+k+(t?' <span style="background:#f97316;color:#fff;font-size:10px;font-weight:700;border-radius:8px;padding:1px 6px;margin-left:2px">오늘</span>':'')+(hn?' <span style="font-weight:400;font-size:11px">'+esc(hn)+' 휴무</span>':'')+'</div>'+
+      (hn?'':mn?'<div style="white-space:pre-wrap'+(t?';font-weight:600':'')+'">'+esc(mn)+'</div>':'<div class="mut" style="font-size:11px">-</div>')+'</div>';
+  });
+  el.innerHTML=h+'</div></div></div><div class="mut">월~금 식단만 보여 드립니다. 식단은 사정에 따라 바뀔 수 있습니다.</div></div>';
+  const mv=k=>{const t=new Date(y,m+k,1);el.dataset.vm=ymd(t);rView()};
+  $('#vprev').onclick=()=>mv(-1);$('#vnext').onclick=()=>mv(1);
+}
+
+/* 입주사 로그인 (식수 신청용) */
+let cme=null;
+try{cme=sessionStorage.getItem('cafe_co')}catch(e){}
+const setCme=v=>{cme=v;try{v?sessionStorage.setItem('cafe_co',v):sessionStorage.removeItem('cafe_co')}catch(e){}};
+function coLogin(el){
+  el.innerHTML='<div class="card"><h2>입주사 로그인</h2><div class="mut" style="margin-bottom:8px">입주사별 아이디로 로그인하면 우리 입주사의 식수 인원만 입력할 수 있습니다. 계정은 관리자가 설정 탭에서 만들어 드립니다.</div>'+
+    '<div class="row"><label>아이디</label><input id="cid" autocapitalize="off" autocomplete="off"></div><div class="row"><label>비밀번호</label><input id="cpw" type="password"></div>'+
+    '<button class="pri" id="cgo">로그인</button> <span id="cmsg2" class="bad"></span></div>';
+  $('#cgo').onclick=async()=>{
+    const id=$('#cid').value.trim(),pw=$('#cpw').value;
+    for(const n of db.companies){
+      const c=db.cred[n];
+      if(c&&c.id===id&&await hashPw(c.salt,pw)===c.hash){setCme(n);return rOrder()}
+    }
+    $('#cmsg2').textContent='아이디 또는 비밀번호가 맞지 않습니다.';
+  };
+}
+
+/* 2. 식수 신청 (입주사) */
+/* 로그인한 입주사의 올해 월별 통계 */
+function coMonthCard(){
+  const ref=$('#order').dataset.cm||today(),r=new Date(ref+'T00:00:00'),y=r.getFullYear(),m=r.getMonth();
+  const n=new Date(y,m+1,0).getDate();
+  let h='<div class="card scroll"><h2>'+esc(cme)+' 월간 통계</h2><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px"><button class="pri sm" id="cmprev">◀</button><b>'+y+'년 '+(m+1)+'월</b><button class="pri sm" id="cmnext">▶</button></div><table><thead><tr><th>일자</th><th>신청</th><th>실제</th><th>차이</th><th>금액</th></tr></thead><tbody>',to=0,ta=0;
+  for(let k=1;k<=n;k++){
+    const dw=new Date(y,m,k).getDay();if(dw===0||dw===6)continue;
+    const d=y+'-'+pad(m+1)+'-'+pad(k),o=ordOf(d,cme),a=(db.actual[d]||{})[cme]||0,df=a-o;
+    to+=o;ta+=a;
+    h+='<tr><td>'+k+'일('+DOW[dw]+')'+(hol(d)?' <span class="bad">휴무</span>':'')+'</td><td>'+o+'</td><td>'+a+'</td><td class="'+(df>0?'bad':df<0?'ok':'')+'">'+(df>0?'+':'')+df+'</td><td>'+won(a*UNIT)+'</td></tr>';
+  }
+  const dt=ta-to;
+  return h+'</tbody><tfoot><tr><td>합계</td><td>'+to+'</td><td>'+ta+'</td><td class="'+(dt>0?'bad':dt<0?'ok':'')+'">'+(dt>0?'+':'')+dt+'</td><td>'+won(ta*UNIT)+'</td></tr></tfoot></table><div class="mut" style="margin-top:8px">신청 = 마감 후 확정된 인원(미신청 시 기본 인원), 실제 = 주방이 결산한 인원, 차이 = 실제 − 신청, 금액 = 실제 × 1식 단가</div></div>';
+}
+function rOrder(){
+  const el=$('#order');
+  if(cme&&!db.companies.includes(cme))setCme(null);
+  if(!isAdmin()&&!cme)return coLogin(el);
+  const d=el.dataset.d||nextOk(tomorrow());
+  const c=closed(d);
+  const o=db.orders[d]||{};
+  let h='<div class="card"><h2>식수 인원 신청</h2>'+(isAdmin()?'<div class="mut" style="margin-bottom:8px">관리자 모드: 모든 입주사를 입력할 수 있습니다.</div>':'<div class="mut" style="margin-bottom:8px">로그인: <b>'+esc(cme)+'</b> <button class="pri sm" id="clogout" style="margin-left:8px">로그아웃</button></div>')+'<div class="row"><label>날짜</label><input id="od" readonly value="'+dtxt(d)+'" style="cursor:pointer"></div>'+
+    '<div class="mut" style="margin-bottom:10px">내일 식수는 오늘 오후 5시에 마감됩니다. 마감까지 신청하지 않으면 관리자가 정한 기본 인원으로 확정됩니다.</div>'+
+    (c?'<div class="bad" style="margin-bottom:8px">⛔ 마감되었습니다. (조회만 가능)</div>':'<div class="ok" style="margin-bottom:8px">✅ 신청 가능</div>');
+  let shown=0;
+  db.companies.forEach((n,i)=>{
+    if(!isAdmin()&&n!==cme)return;
+    if(typeof db.defaults[n]!=='number')return;
+    shown++;
+    h+='<div class="row"><label>'+esc(n)+'</label><input type="number" min="0" inputmode="numeric" data-i="'+i+'" value="'+(c?ordOf(d,n):(o[n]??''))+'" '+(c?'disabled':'')+' placeholder="기본 '+(db.defaults[n]||0)+'명"></div>';
+  });
+  if(!shown)h+='<div class="mut" style="margin:8px 0">식수 신청 대상이 없습니다. 설정 &gt; 기본 식수 인원 입력(신청)에 등록된 입주사만 표시됩니다.</div>';
+  h+='<div class="row" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--bd)"><label><b>합계</b></label><b id="otot">0명</b></div>';
+  h+='<button class="pri" id="osave" '+(c||!shown?'disabled':'')+'>저장</button> <span id="omsg" class="ok"></span></div>';
+  el.innerHTML=h+(!isAdmin()&&cme?coMonthCard():'');
+  calPicker($('#od'),d,tomorrow(),v=>{el.dataset.d=v;rOrder()});
+  if($('#cmprev')){const mv=k=>{const t=new Date((el.dataset.cm||today())+'T00:00:00');t.setDate(1);t.setMonth(t.getMonth()+k);el.dataset.cm=ymd(t);rOrder()};$('#cmprev').onclick=()=>mv(-1);$('#cmnext').onclick=()=>mv(1)}
+  const tot=()=>{$('#otot').textContent=[...el.querySelectorAll('input[data-i]')].reduce((a,x)=>a+(x.value===''?(db.defaults[db.companies[x.dataset.i]]||0):(parseInt(x.value)||0)),0)+'명'};
+  el.querySelectorAll('input[data-i]').forEach(x=>x.oninput=tot);tot();
+  if($('#clogout'))$('#clogout').onclick=()=>{setCme(null);rOrder()};
+  $('#osave').onclick=()=>{
+    if(closed(d)){return rOrder()}
+    const r={...(db.orders[d]||{})};
+    el.querySelectorAll('input[data-i]').forEach(inp=>{const nm=db.companies[inp.dataset.i];if(inp.value==='')delete r[nm];else r[nm]=Math.max(0,parseInt(inp.value)||0)});
+    db.orders[d]=r;save();$('#omsg').textContent='저장되었습니다.';
+  };
+}
+
+/* 관리자 인증 (이 기기 브라우저 기준, 최대 10명) */
+let me=null;
+try{me=sessionStorage.getItem('cafe_me')}catch(e){}
+const setMe=v=>{me=v;try{v?sessionStorage.setItem('cafe_me',v):sessionStorage.removeItem('cafe_me')}catch(e){}updNav()};
+const isAdmin=()=>!!me&&db.admins.some(a=>a.id===me);
+const adminName=()=>(db.admins.find(a=>a.id===me)||{}).name||'';
+const newSalt=()=>Math.random().toString(36).slice(2)+Date.now().toString(36);
+async function hashPw(salt,pw){
+  const s=salt+':'+pw;
+  try{const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('')}
+  catch(e){let h=5381;for(let i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))|0;return 'f'+h}
+}
+async function addAdmin(name,pw,pw2){
+  name=name.trim();
+  if(!name)return '이름을 입력하세요.';
+  if(db.admins.length>=10)return '관리자는 최대 10명입니다.';
+  if(db.admins.some(a=>a.name===name))return '이미 있는 이름입니다.';
+  if(pw.length<4)return '비밀번호는 4자 이상이어야 합니다.';
+  if(pw!==pw2)return '비밀번호 확인이 일치하지 않습니다.';
+  const salt=newSalt();
+  const a={id:'a'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),name,salt,hash:await hashPw(salt,pw)};
+  db.admins.push(a);save();return a;
+}
+function rKitchen(){
+  const el=$('#kitchen');
+  if(isAdmin())return rKitchenMain();
+  setMe(null);
+  if(!db.admins.length){
+    el.innerHTML='<div class="card"><h2>최초 관리자 등록</h2><div class="mut" style="margin-bottom:8px">등록된 관리자가 없습니다. 첫 관리자를 만들어 주세요. (최대 10명)</div>'+
+      '<div class="row"><label>이름</label><input id="an"></div><div class="row"><label>비밀번호</label><input id="ap" type="password"></div><div class="row"><label>확인</label><input id="ap2" type="password"></div>'+
+      '<button class="pri" id="ago">등록</button> <span id="amsg" class="bad"></span></div>';
+    $('#ago').onclick=async()=>{
+      const r=await addAdmin($('#an').value,$('#ap').value,$('#ap2').value);
+      if(typeof r==='string')return $('#amsg').textContent=r;
+      setMe(r.id);rKitchen();
+    };
+  }else{
+    el.innerHTML='<div class="card"><h2>관리자 로그인</h2><div class="row"><label>관리자</label><select id="ln">'+db.admins.map(a=>'<option value="'+a.id+'">'+esc(a.name)+'</option>').join('')+'</select></div>'+
+      '<div class="row"><label>비밀번호</label><input id="lp" type="password"></div><button class="pri" id="lgo">로그인</button> <span id="lmsg" class="bad"></span></div>';
+    $('#lgo').onclick=async()=>{
+      const a=db.admins.find(x=>x.id===$('#ln').value);
+      if(a&&await hashPw(a.salt,$('#lp').value)===a.hash){setMe(a.id);rKitchen()}
+      else $('#lmsg').textContent='비밀번호가 맞지 않습니다.';
+    };
+  }
+}
+function adminCard(){
+  let h='<div class="card"><h2>관리자 관리 ('+db.admins.length+'/10)</h2><div class="mut" style="margin-bottom:8px">로그인: <b>'+esc(adminName())+'</b> <button class="pri sm" id="alogout" style="margin-left:8px">로그아웃</button></div>';
+  db.admins.forEach(a=>{
+    h+='<div class="row"><label style="width:70px">'+esc(a.name)+'</label><input type="password" data-pw="'+a.id+'" placeholder="새 비밀번호"><button class="pri sm" data-setpw="'+a.id+'">변경</button>'+
+      (a.id!==me?'<button class="pri sm" data-del="'+a.id+'" style="background:var(--bad)">삭제</button>':'')+'</div>';
+  });
+  if(db.admins.length<10)h+='<hr><div class="row"><label>이름</label><input id="nn"></div><div class="row"><label>비밀번호</label><input id="np" type="password"></div><button class="pri" id="nadd">관리자 추가</button>';
+  return h+' <span id="admsg" class="bad"></span></div>';
+}
+function credCard(){
+  let h='<div class="card"><h2>입주사 로그인 계정 (식수 신청용)</h2><div class="mut" style="margin-bottom:8px">입주사마다 아이디와 비밀번호(4자 이상)를 정해 알려 주세요. 입주사는 로그인한 자기 입주사의 식수 인원만 입력할 수 있습니다.</div>';
+  db.companies.forEach((n,i)=>{
+    const c=db.cred[n]||{};
+    h+='<div class="row"><label style="width:70px">'+esc(n)+'</label><input data-cid="'+i+'" value="'+esc(c.id||'')+'" placeholder="아이디" autocomplete="off"><input type="password" data-cpw="'+i+'" placeholder="'+(c.id?'새 비밀번호(변경 시)':'비밀번호')+'" autocomplete="new-password"><button class="pri sm" data-csv="'+i+'">저장</button></div>';
+  });
+  return h+'<span id="crmsg" class="bad"></span></div>';
+}
+function bindCred(){
+  const m=(t,ok)=>{const s=$('#crmsg');s.textContent=t;s.className=ok?'ok':'bad'};
+  document.querySelectorAll('[data-csv]').forEach(b=>b.onclick=async()=>{
+    const i=b.dataset.csv,n=db.companies[i];
+    const id=document.querySelector('[data-cid="'+i+'"]').value.trim();
+    const pw=document.querySelector('[data-cpw="'+i+'"]').value;
+    const old=db.cred[n];
+    if(!id)return m('아이디를 입력하세요.');
+    if(db.companies.some(x=>x!==n&&db.cred[x]&&db.cred[x].id===id))return m('이미 사용 중인 아이디입니다.');
+    if((!old||pw)&&pw.length<4)return m('비밀번호는 4자 이상이어야 합니다.');
+    const salt=pw?newSalt():old.salt;
+    db.cred[n]={id,salt,hash:pw?await hashPw(salt,pw):old.hash};
+    save();
+    document.querySelector('[data-cpw="'+i+'"]').value='';
+    m(n+' 계정을 저장했습니다.',true);
+  });
+}
+function holCard(){
+  let h='<div class="card"><h2>휴무일 추가</h2><div class="mut" style="margin-bottom:8px">한국 공휴일(2026~2027년)은 자동 반영됩니다. 임시공휴일이나 자체 휴무일은 여기서 추가하세요.</div>'+
+    '<div class="row"><label>날짜</label><input id="hd" readonly placeholder="날짜 선택" style="cursor:pointer"></div><div class="row"><label>이름</label><input id="hn" placeholder="예) 임시공휴일"></div>'+
+    '<button class="pri" id="hadd">추가</button> <span id="hmsg" class="bad"></span>';
+  Object.keys(db.hol).sort().forEach(k=>{h+='<div class="row"><label style="width:auto;flex:1">'+k+' '+esc(db.hol[k])+'</label><button class="pri sm" data-hdel="'+k+'" style="background:var(--bad)">삭제</button></div>'});
+  return h+'</div>';
+}
+function bindHol(){
+  calPicker($('#hd'),today(),'',v=>{$('#hd').value=dtxt(v);$('#hd').dataset.v=v},true);
+  $('#hadd').onclick=()=>{
+    const d=$('#hd').dataset.v||'',n=$('#hn').value.trim();
+    if(!d||!n)return $('#hmsg').textContent='날짜와 이름을 입력하세요.';
+    db.hol[d]=n;save();rKitchen();
+  };
+  document.querySelectorAll('[data-hdel]').forEach(b=>b.onclick=()=>{delete db.hol[b.dataset.hdel];save();rKitchen()});
+}
+function bindAdmin(){
+  const m=(t,ok)=>{const s=$('#admsg');s.textContent=t;s.className=ok?'ok':'bad'};
+  $('#alogout').onclick=()=>{setMe(null);rKitchen()};
+  if($('#nadd'))$('#nadd').onclick=async()=>{
+    const r=await addAdmin($('#nn').value,$('#np').value,$('#np').value);
+    if(typeof r==='string')return m(r);
+    rKitchen();
+  };
+  document.querySelectorAll('[data-setpw]').forEach(b=>b.onclick=async()=>{
+    const a=db.admins.find(x=>x.id===b.dataset.setpw);
+    const v=document.querySelector('[data-pw="'+a.id+'"]').value;
+    if(v.length<4)return m('비밀번호는 4자 이상이어야 합니다.');
+    a.salt=newSalt();a.hash=await hashPw(a.salt,v);save();
+    document.querySelector('[data-pw="'+a.id+'"]').value='';m(a.name+' 비밀번호를 변경했습니다.',true);
+  });
+  document.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{
+    db.admins=db.admins.filter(x=>x.id!==b.dataset.del);save();rKitchen();
+  });
+}
+
+/* 3. 주방: 식단 입력 + 실제 식수 */
+/* 식단 일괄 등록: 날짜 줄(2026-11-03 / 11/3 / 11월 3일 / 3일) 아래에 메뉴를 한 줄씩 */
+function parseMenus(t,by,bm){
+  const out={},bad=[];let cur=null;
+  const mk=(y,m,d)=>{const dt=new Date(y,m-1,d);return dt.getMonth()===m-1&&dt.getDate()===d?y+'-'+pad(m)+'-'+pad(d):null};
+  t.split(/\r?\n/).forEach(raw=>{
+    const ln=raw.trim();if(!ln)return;
+    let m,isDate=true;
+    if(m=ln.match(/^(\d{4})[-./]\s*(\d{1,2})[-./]\s*(\d{1,2})\s*(\(.*\))?$/))cur=mk(+m[1],+m[2],+m[3]);
+    else if(m=ln.match(/^(\d{1,2})\s*[\/월]\s*(\d{1,2})\s*일?\s*(\(.*\))?$/))cur=mk(by,+m[1],+m[2]);
+    else if(m=ln.match(/^(\d{1,2})\s*일\s*(\(.*\))?$/))cur=mk(by,bm,+m[1]);
+    else isDate=false;
+    if(isDate){if(cur)out[cur]=out[cur]||[];else bad.push(ln);return}
+    if(cur)out[cur].push(ln);else bad.push(ln);
+  });
+  Object.keys(out).forEach(d=>{if(!out[d].length)delete out[d]});
+  return {out,bad};
+}
+function rKitchenMain(){
+  const el=$('#kitchen');
+  const md=el.dataset.md||nextOk(tomorrow());
+  const prevOk=d=>{let x=d;for(let i=0;i<400&&offDay(x);i++)x=ymd(add(new Date(x+'T00:00:00'),-1));return x};
+  const ad=el.dataset.ad||prevOk(today());
+  const ao={};db.companies.forEach(c=>{ao[c]=ordOf(ad,c)});const aa=db.actual[ad]||{};
+  let h='<div class="card"><h2>식단 입력</h2><div class="row"><label>날짜</label><input id="md" readonly value="'+dtxt(md)+'" style="cursor:pointer"></div>'+
+    '<textarea id="mt" placeholder="예) 잡곡밥, 된장찌개, 제육볶음, 김치">'+esc(db.menus[md]||'')+'</textarea>'+
+    '<button class="pri" id="msave">식단 저장</button> <span id="mmsg" class="ok"></span></div>';
+  h+='<div class="card"><h2>식단 일괄 등록</h2><div class="mut" style="margin-bottom:8px">날짜 줄 아래에 메뉴를 한 줄에 하나씩 붙여 넣으세요. 날짜는 <b>2026-11-03</b>, <b>11/3</b>, <b>11월 3일</b>, <b>3일</b> 형식을 쓸 수 있습니다. 이미 등록된 날짜는 덮어씁니다.</div>'+
+    '<textarea id="bt" style="min-height:160px" placeholder="2026-11-03&#10;소고기무국&#10;취나물볶음&#10;&#10;2026-11-04&#10;맑은콩나물국&#10;닭갈비"></textarea>'+
+    '<button class="pri" id="bprev">미리보기</button> <button class="pri" id="bgo" disabled>등록</button> <span id="bmsg2" class="ok"></span><div id="bview" class="mut" style="margin-top:8px"></div></div>';
+  h+='<div class="card"><h2>실제 식수 인원 입력 (결산)</h2><div class="row"><label>날짜</label><input id="ad" readonly value="'+dtxt(ad)+'" style="cursor:pointer"></div>';
+  let ashown=0;
+  db.companies.forEach((n,i)=>{
+    if(typeof db.defaults[n]!=='number')return;
+    ashown++;
+    h+='<div class="row"><label>'+esc(n)+'</label><input type="number" min="0" inputmode="numeric" data-j="'+i+'" value="'+(aa[n]??'')+'" placeholder="신청 '+(ao[n]??0)+'명"></div>';
+  });
+  if(!ashown)h+='<div class="mut" style="margin:8px 0">결산 대상이 없습니다. 아래 기본 식수 인원 입력(신청)에 등록된 입주사만 표시됩니다.</div>';
+  h+='<div class="row" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--bd)"><label><b>합계</b></label><b id="atot">0명</b><span class="mut">(신청: '+db.companies.reduce((s,c)=>s+(ao[c]||0),0)+'명)</span></div>';
+  h+='<button class="pri" id="asave">결산 저장</button> <span id="amsg" class="ok"></span></div>';
+  h+='<div class="card"><h2>입주사 설정 (최대 7곳)</h2>';
+  for(let i=0;i<7;i++){const n=db.companies[i]||'';h+='<div class="row"><label>입주사 '+(i+1)+'</label><input data-c="'+i+'" value="'+esc(n)+'" placeholder="비워 두면 사용 안 함"></div>'}
+  h+='<button class="pri" id="csave">이름 저장</button> <span id="cmsg" class="bad"></span><div class="mut" style="margin-top:6px">이름이 입력된 입주사만 식수 신청과 통계에 표시됩니다. 이름을 바꾸면 기존 기록도 새 이름으로 함께 바뀌고, 이름을 지우면 목록에서만 빠집니다(기록은 보관되며 같은 이름으로 다시 추가하면 복원됩니다).</div></div>';
+  h+='<div class="card"><h2>기본 식수 인원 입력 (신청)</h2><div class="mut" style="margin-bottom:8px">입주사가 마감(오후 5시)까지 신청하지 않으면 여기서 정한 인원이 신청 인원으로 적용됩니다. 주말·휴무일에는 적용되지 않습니다.</div>';
+  db.companies.forEach((n,i)=>{
+    h+='<div class="row"><label>'+esc(n)+'</label><input type="number" min="0" inputmode="numeric" data-b="'+i+'" value="'+(db.defaults[n]??'')+'" placeholder="기본 인원"></div>';
+  });
+  h+='<div class="row" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--bd)"><label><b>합계</b></label><b id="btot">0명</b></div>';
+  h+='<button class="pri" id="bsave">기본 인원 저장</button> <span id="bmsg" class="ok"></span></div>';
+  h+=adminCard();
+  h+=credCard();
+  h+=holCard();
+  el.innerHTML=h;
+  calPicker($('#md'),md,'',v=>{el.dataset.md=v;rKitchen()});
+  calPicker($('#ad'),ad,'',v=>{el.dataset.ad=v;rKitchen()});
+  const atot=()=>{$('#atot').textContent=[...el.querySelectorAll('input[data-j]')].reduce((a,x)=>a+(parseInt(x.value)||0),0)+'명'};
+  el.querySelectorAll('input[data-j]').forEach(x=>x.oninput=atot);atot();
+  const btot=()=>{$('#btot').textContent=[...el.querySelectorAll('input[data-b]')].reduce((a,x)=>a+(parseInt(x.value)||0),0)+'명'};
+  el.querySelectorAll('input[data-b]').forEach(x=>x.oninput=btot);btot();
+  $('#bsave').onclick=async()=>{
+    await q;await finalizeDue();
+    const r={};
+    el.querySelectorAll('input[data-b]').forEach(inp=>{if(inp.value!=='')r[db.companies[inp.dataset.b]]=Math.max(0,parseInt(inp.value)||0)});
+    db.defaults=r;save();$('#bmsg').textContent='저장되었습니다.';
+  };
+  let pend=null;
+  $('#bt').oninput=()=>{pend=null;$('#bgo').disabled=true;$('#bview').innerHTML='';$('#bmsg2').textContent=''};
+  $('#bprev').onclick=()=>{
+    const b=new Date(md+'T00:00:00'),r=parseMenus($('#bt').value,b.getFullYear(),b.getMonth()+1),ds=Object.keys(r.out).sort();
+    $('#bmsg2').textContent='';
+    if(!ds.length){pend=null;$('#bgo').disabled=true;$('#bview').innerHTML='<span class="bad">인식된 날짜가 없습니다. 날짜 줄(예: 2026-11-03) 아래에 메뉴를 적어 주세요.</span>';return}
+    pend=r.out;$('#bgo').disabled=false;
+    let ow=0,v='<b>'+ds.length+'일 식단이 등록됩니다.</b><br>';
+    ds.forEach(d=>{const ex=!!db.menus[d];if(ex)ow++;v+='· '+esc(dtxt(d))+(hol(d)?' <span class="bad">(휴무일)</span>':'')+' — '+r.out[d].length+'개 메뉴'+(ex?' <span class="bad">(덮어씀)</span>':'')+'<br>'});
+    if(r.bad.length)v+='<span class="bad">날짜 없이 입력된 '+r.bad.length+'줄은 무시됩니다.</span><br>';
+    $('#bview').innerHTML=v;
+  };
+  $('#bgo').onclick=()=>{
+    if(!pend)return;const ds=Object.keys(pend);
+    ds.forEach(d=>{db.menus[d]=pend[d].join('\n')});
+    save();pend=null;$('#bgo').disabled=true;$('#bt').value='';$('#bview').innerHTML='';
+    $('#bmsg2').textContent=ds.length+'일 식단이 등록되었습니다.';
+  };
+  $('#msave').onclick=()=>{const t=$('#mt').value.trim();if(t)db.menus[md]=t;else delete db.menus[md];save();$('#mmsg').textContent='저장되었습니다.'};
+  $('#asave').onclick=()=>{
+    const r={...(db.actual[ad]||{})};
+    el.querySelectorAll('input[data-j]').forEach(inp=>{const nm=db.companies[inp.dataset.j];if(inp.value==='')delete r[nm];else r[nm]=Math.max(0,parseInt(inp.value)||0)});
+    db.actual[ad]=r;save();$('#amsg').textContent='저장되었습니다.';
+  };
+  $('#csave').onclick=()=>{
+    const old=db.companies.slice();
+    const nv=[...el.querySelectorAll('input[data-c]')].map(inp=>inp.value.trim());
+    const act=nv.filter(Boolean);
+    if(!act.length)return $('#cmsg').textContent='입주사를 1곳 이상 입력하세요.';
+    if(new Set(act).size<act.length)return $('#cmsg').textContent='입주사 이름이 서로 같을 수 없습니다.';
+    const m={};
+    old.forEach((o,i)=>{if(nv[i]&&nv[i]!==o&&!old.includes(nv[i]))m[o]=nv[i]});
+    if(Object.keys(m).length)['orders','actual'].forEach(s=>Object.keys(db[s]).forEach(d=>{
+      const r=db[s][d],q={};
+      Object.keys(r).forEach(k=>{const n=m[k]||k;q[n]=(q[n]||0)+r[k]});
+      db[s][d]=q;
+    }));
+    Object.keys(m).forEach(o=>{if(db.defaults[o]!==undefined){db.defaults[m[o]]=db.defaults[o];delete db.defaults[o]}});
+    Object.keys(m).forEach(o=>{if(db.cred[o]){db.cred[m[o]]=db.cred[o];delete db.cred[o]}});
+    db.companies=act;save();rKitchen();
+  };
+  bindAdmin();bindCred();bindHol();
+}
+
+/* 엑셀(CSV) 내보내기 */
+const csv=a=>'\uFEFF'+a.map(r=>r.map(v=>{v=String(v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v}).join(',')).join('\r\n');
+async function dl(name,text,el){
+  try{
+    const d=await claude.use('downloads');
+    if(!d){el.textContent='이 화면에서는 내보내기를 사용할 수 없습니다.';return}
+    await d.save({filename:name,data:text});el.textContent='저장 요청을 완료했습니다.';
+  }catch(e){el.textContent=e&&e.code==='declined'?'저장이 취소되었습니다.':'내보내기에 실패했습니다.'}
+}
+
+/* 통계 행 만들기 (화면 표와 엑셀 내보내기가 함께 사용) */
+const statCos=()=>db.companies.filter(c=>typeof db.defaults[c]==='number'); /* 통계는 기본 식수 인원이 설정된 입주사만 */
+const UNIT=15000; /* 1식 단가(원) — 바꾸려면 이 숫자만 수정 */
+const won=n=>n.toLocaleString('ko-KR')+'원';
+function buildRows(p,ref){
+  const r=new Date(ref+'T00:00:00');
+  const sum=(days,src,c)=>days.reduce((a,d)=>a+(src==='orders'?ordOf(d,c):((db[src][d]||{})[c]||0)),0);
+  const rows=[];
+  if(p==='week'){
+    const mon=add(r,-((r.getDay()+6)%7));
+    for(let i=0;i<5;i++){const d=ymd(add(mon,i));rows.push({l:lab(d),days:[d],h:hol(d)})}
+  }else if(p==='month'){
+    const n=new Date(r.getFullYear(),r.getMonth()+1,0).getDate();
+    for(let i=1;i<=n;i++){const dw=new Date(r.getFullYear(),r.getMonth(),i).getDay();if(dw===0||dw===6)continue;const d=r.getFullYear()+'-'+pad(r.getMonth()+1)+'-'+pad(i);rows.push({l:i+'일('+DOW[dw]+')',days:[d],h:hol(d)})}
+  }else{
+    for(let m=0;m<12;m++){
+      const n=new Date(r.getFullYear(),m+1,0).getDate(),days=[];
+      for(let i=1;i<=n;i++)days.push(r.getFullYear()+'-'+pad(m+1)+'-'+pad(i));
+      rows.push({l:(m+1)+'월',days});
+    }
+  }
+  rows.forEach(x=>{
+    x.o=statCos().reduce((a,c)=>a+sum(x.days,'orders',c),0);
+    x.a=statCos().map(c=>sum(x.days,'actual',c));
+    x.oc=statCos().map(c=>sum(x.days,'orders',c));
+    x.at=x.a.reduce((a,b)=>a+b,0);
+  });
+  return rows;
+}
+/* 엑셀(xlsx) 파일 저장 */
+async function xlsx(name,sheet,aoa,el){
+  try{
+    if(typeof XLSX==='undefined'){el.textContent='엑셀 도구를 불러오지 못했습니다. 새로고침 후 다시 시도하세요.';return}
+    const ws=XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols']=aoa[0].map((_,i)=>({wch:sheet==='일자별상세'&&i===1?30:sheet==='월별보고서'?(i===0?26:13):i===0?14:11}));
+    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,sheet);
+    const buf=XLSX.write(wb,{bookType:'xlsx',type:'array'});
+    const d=await claude.use('downloads');
+    if(!d){el.textContent='이 화면에서는 내보내기를 사용할 수 없습니다.';return}
+    await d.save({filename:name,data:buf});el.textContent='저장 요청을 완료했습니다.';
+  }catch(e){el.textContent=e&&e.code==='declined'?'저장이 취소되었습니다.':'내보내기에 실패했습니다.'}
+}
+
+/* 4. 통계 */
+function rStats(){
+  const el=$('#stats');
+  const p=el.dataset.p||'month', ref=el.dataset.r||today();
+  const adm=isAdmin();
+  const r=new Date(ref+'T00:00:00');
+  const sum=(days,src,c)=>days.reduce((a,d)=>a+((db[src][d]||{})[c]||0),0);
+  const rows=buildRows(p,ref);
+  const to=rows.reduce((a,x)=>a+x.o,0), ta=rows.reduce((a,x)=>a+x.at,0);
+  const tc=statCos().map((_,i)=>rows.reduce((a,x)=>a+x.a[i],0));
+  const toc=statCos().map((_,i)=>rows.reduce((a,x)=>a+x.oc[i],0));
+  const title=p==='week'?'주간':p==='month'?'월간 ('+r.getFullYear()+'년 '+(r.getMonth()+1)+'월)':'연간 ('+r.getFullYear()+'년)';
+  let h='<div class="card"><h2>'+title+' 통계</h2><div class="row"><label>기간</label><select id="sp"><option value="week">주간</option><option value="month">월간</option><option value="year">연간</option></select></div>'+
+    '<div class="row"><label>기준일</label><input type="date" id="sr" value="'+ref+'"></div>'+
+    '<div class="mut">신청 = 입주사가 미리 입력한 인원, 실제 = 주방이 결산한 인원, 차이 = 실제 − 신청</div>'+
+    (adm?'<div style="margin-top:8px"><button class="pri sm" id="x1">월간 통계 엑셀</button> <button class="pri sm" id="x2">연간 통계 엑셀</button> <button class="pri sm" id="x3">일자별 상세 엑셀</button> <button class="pri sm" id="x4">월별 보고서</button> <span id="xmsg" class="mut"></span></div>':'<div class="mut" style="margin-top:6px">엑셀 내보내기는 설정 탭에서 관리자 로그인 후 사용할 수 있습니다.</div>')+'</div>'+
+    '<div class="card scroll"><table><thead><tr><th>구분</th><th>신청/실제</th><th>차이</th>'+
+    statCos().map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr></thead><tbody>';
+  rows.forEach(x=>{
+    const df=x.at-x.o;
+    h+='<tr><td>'+x.l+(x.h?' <b class="bad">휴무</b>':'')+'</td><td>'+x.o+' / '+x.at+'</td><td class="'+(df>0?'bad':df<0?'ok':'')+'">'+(df>0?'+':'')+df+'</td>'+
+      x.a.map((v,i)=>'<td>'+x.oc[i]+' / '+v+'</td>').join('')+'</tr>';
+  });
+  const dt=ta-to;
+  h+='</tbody><tfoot><tr><td>합계</td><td>'+to+' / '+ta+'</td><td>'+(dt>0?'+':'')+dt+'</td>'+tc.map((v,i)=>'<td>'+toc[i]+' / '+v+'</td>').join('')+'</tr><tr><td>금액<br><span class="mut">'+ta+'회×'+UNIT.toLocaleString('ko-KR')+'원</span></td><td colspan="2">'+won(ta*UNIT)+'</td>'+tc.map(v=>'<td>'+won(v*UNIT)+'</td>').join('')+'</tr></tfoot></table></div>';
+  el.innerHTML=h;
+  $('#sp').value=p;
+  $('#sp').onchange=e=>{el.dataset.p=e.target.value;rStats()};
+  $('#sr').onchange=e=>{el.dataset.r=e.target.value||today();rStats()};
+  if(adm){
+    const msg=$('#xmsg');
+    const hdr=['구분','휴무','신청','실제','차이',...statCos().flatMap(c=>[c+' 신청',c+' 실제'])];
+    const toAoa=rs=>{
+      const t={o:0,a:0,oc:statCos().map(()=>0),ac:statCos().map(()=>0)};
+      const body=rs.map(x=>{
+        t.o+=x.o;t.a+=x.at;x.oc.forEach((v,i)=>{t.oc[i]+=v;t.ac[i]+=x.a[i]});
+        return [x.l,x.h?'휴무':'',x.o,x.at,x.at-x.o,...x.a.flatMap((v,i)=>[x.oc[i],v])];
+      });
+      return [hdr,...body,['합계','',t.o,t.a,t.a-t.o,...t.ac.flatMap((v,i)=>[t.oc[i],v])],['금액 ('+t.a+'회 × '+UNIT.toLocaleString('ko-KR')+'원)','','',t.a*UNIT,'',...t.ac.flatMap(v=>['',v*UNIT])]];
+    };
+    $('#x1').onclick=()=>xlsx('식수통계_월간_'+ref.slice(0,7)+'.xlsx','월간',toAoa(buildRows('month',ref)),msg);
+    $('#x2').onclick=()=>xlsx('식수통계_연간_'+ref.slice(0,4)+'.xlsx','연간',toAoa(buildRows('year',ref)),msg);
+    /* 월별 보고서: 실제 식수만, '(손님)' 입주사는 본 입주사에 합산, 금액 = 실제 × 단가 */
+    $('#x4').onclick=()=>{
+      const cos=statCos(),names=[];
+      const idx=cos.map(c=>{const b=c.replace(/\s*\(손님\)\s*$/,'');let k=names.indexOf(b);if(k<0){names.push(b);k=names.length-1}return k});
+      const tot=names.map(()=>0);
+      const body=buildRows('month',ref).map(x=>{
+        const v=names.map(()=>0);x.a.forEach((n,i)=>{v[idx[i]]+=n});v.forEach((n,k)=>{tot[k]+=n});
+        const t=v.reduce((a,b)=>a+b,0);
+        return [x.l+(x.h?' (휴무)':''),...v.map(n=>n||''),t||''];
+      });
+      const T=tot.reduce((a,b)=>a+b,0);
+      xlsx('식수보고서_'+ref.slice(0,7)+'.xlsx','월별보고서',[
+        [ref.slice(0,4)+'년 '+(+ref.slice(5,7))+'월',...names,'합계'],
+        ...body,
+        ['합계 (식)',...tot,T],
+        ['금액 (실제 × '+UNIT.toLocaleString('ko-KR')+'원)',...tot.map(n=>n*UNIT),T*UNIT]
+      ],msg);
+    };
+    $('#x3').onclick=()=>{
+      const ds=[...new Set([...Object.keys(db.orders),...Object.keys(db.actual),...Object.keys(db.menus)])].sort();
+      xlsx('식수_일자별상세.xlsx','일자별상세',[
+        ['날짜','식단',...statCos().flatMap(c=>[c+' 신청',c+' 실제']),'신청합계','실제합계'],
+        ...ds.map(d=>{
+          const o=db.orders[d]||{},a=db.actual[d]||{};
+          return [d,(db.menus[d]||'').replace(/\s*\n\s*/g,' / '),...statCos().flatMap(c=>[ordOf(d,c),a[c]??0]),
+            statCos().reduce((s,c)=>s+ordOf(d,c),0),statCos().reduce((s,c)=>s+(a[c]||0),0)];
+        })
+      ],msg);
+    };
+  }
+}
+document.addEventListener('focusin',e=>{if(e.target.type==='number')setTimeout(()=>{try{e.target.select()}catch(x){}},0)});
+show('view');
+</script>
+</body>
+</html>
