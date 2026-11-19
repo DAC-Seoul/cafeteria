@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <rect width="1024" height="1024" rx="230" fill="#03C75A"/>
+  <g transform="translate(512,430) scale(0.78) translate(-512,-520)">
+  <!-- plate -->
+  <circle cx="512" cy="520" r="235" fill="#FFFFFF"/>
+  <circle cx="512" cy="520" r="172" fill="none" stroke="#03C75A" stroke-width="22"/>
+  <g fill="#FFFFFF">
+    <!-- fork -->
+    <rect x="128" y="260" width="22" height="160" rx="11"/>
+    <rect x="167" y="260" width="22" height="160" rx="11"/>
+    <rect x="206" y="260" width="22" height="160" rx="11"/>
+    <path d="M128 400 L228 400 L228 420 Q228 470 196 485 L160 485 Q128 470 128 420 Z"/>
+    <rect x="156" y="470" width="44" height="310" rx="22"/>
+    <!-- knife -->
+    <path d="M846 260 Q900 300 900 420 L900 520 L846 520 Z"/>
+    <rect x="824" y="250" width="44" height="530" rx="22"/>
+  </g>
+</g>
+  <text x="512" y="880" text-anchor="middle" font-family="Noto Sans CJK KR" font-weight="900" font-size="150" fill="#FFFFFF">각당식당</text>
+</svg>
